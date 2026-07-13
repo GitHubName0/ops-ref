@@ -767,3 +767,253 @@ kolla-ansible -i multinode check                        # 健康检查
 > 2. 虚拟机出问题最先看 `openstack server show` 和 `openstack console log show`
 > 3. 网络不通先看安全组和浮动 IP，其次看 Neutron Agent 状态
 > 4. 学会用 Request ID 串联各服务日志——这是 OpenStack 排障的核心技能
+
+---
+
+## 14. 组件原生命令参考（nova / cinder / neutron / glance / swift）
+
+> 以下为各组件独立的 CLI 命令（非统一 `openstack` CLI）。运维老手常用，部分场景比 `openstack` 更快更灵活。
+
+### Nova（计算）
+
+```bash
+# === 虚拟机管理 ===
+nova list                                            # 列出所有虚拟机
+nova list --all-tenants                              # 所有租户
+nova list --host compute-01                          # 某计算节点上的虚拟机
+nova list --name myvm                                # 按名称过滤
+nova list --status ACTIVE                            # 按状态过滤
+nova show <vm-id>                                    # 虚拟机详情
+nova show <vm-id> | grep hypervisor                  # 看跑在哪台物理机上
+
+# 创建与删除
+nova boot --flavor m1.medium --image centos7 --nic net-id=<net-id> myvm
+nova boot --flavor 2 --image centos7 --key-name mykey --user-data init.sh myvm
+nova delete <vm-id>
+
+# 操作
+nova start <vm-id>                                   # 开机
+nova stop <vm-id>                                    # 关机
+nova reboot <vm-id>                                  # 软重启
+nova reboot --hard <vm-id>                           # 硬重启
+nova pause / unpause <vm-id>
+nova suspend / resume <vm-id>
+nova rescue <vm-id>                                  # 救援模式
+nova unrescue <vm-id>
+nova lock / unlock <vm-id>                           # 锁定（防误删）
+
+# 迁移
+nova live-migration <vm-id> <target-host>            # 热迁移
+nova migrate <vm-id>                                 # 冷迁移
+nova resize <vm-id> <new-flavor>                     # 变更规格
+nova resize-confirm <vm-id>                          # 确认 resize
+nova resize-revert <vm-id>                           # 回滚 resize
+nova evacuate <vm-id> <target-host>                  # 疏散（宿主机宕机）
+
+# 控制台
+nova get-vnc-console <vm-id> novnc                   # 获取 VNC 链接
+nova console-log <vm-id>                             # 控制台日志（排障必备）
+nova console-log <vm-id> | tail -50
+
+# === 计算节点管理 ===
+nova host-list                                       # 列出所有计算节点
+nova host-describe <host>                            # 节点资源详情
+nova host-servers-migrate <host>                     # 迁移节点上所有虚拟机
+nova service-list                                    # Nova 服务状态
+nova service-enable <host> nova-compute              # 启用服务
+nova service-disable <host> nova-compute             # 禁用服务
+nova service-force-down <host> nova-compute          # 强制标记为 down
+
+# === 规格与聚合 ===
+nova flavor-list                                     # 规格列表
+nova flavor-create m1.custom auto 2048 20 2          # 创建规格(名/ID/内存MB/磁盘GB/CPU)
+nova flavor-delete <flavor-id>
+nova aggregate-list                                  # 主机聚合
+nova aggregate-create myagg                          # 创建聚合
+nova aggregate-add-host <agg-id> <host>              # 加节点到聚合
+nova aggregate-set-metadata <agg-id> ssd=true        # 设置元数据
+
+# === 密钥与安全组 ===
+nova keypair-list
+nova keypair-add mykey > mykey.pem
+nova keypair-delete mykey
+nova secgroup-list
+nova secgroup-list-rules default
+nova secgroup-add-rule default tcp 22 22 0.0.0.0/0
+```
+
+### Cinder（块存储）
+
+```bash
+# === 云硬盘管理 ===
+cinder list                                          # 所有云硬盘
+cinder list --all-tenants
+cinder show <vol-id>                                 # 详情
+cinder show <vol-id> | grep os-vol-host-attr         # 所在存储后端
+cinder show <vol-id> | grep status
+
+# 创建与删除
+cinder create 10                                     # 创建 10GB 云硬盘
+cinder create --name myvol --volume-type ssd 50      # 指定类型和名称
+cinder create --snapshot-id <snap-id> 50             # 从快照创建
+cinder create --image-id <img-id> 50                 # 从镜像创建
+cinder create --source-volid <vol-id> 50             # 从已有云硬盘克隆
+cinder delete <vol-id>
+
+# 挂载与卸载
+cinder list | grep available                         # 看哪些可用
+nova volume-attach <vm-id> <vol-id> /dev/vdb         # 挂载到虚拟机
+nova volume-detach <vm-id> <vol-id>                  # 卸载
+
+# 扩容
+cinder extend <vol-id> 20                            # 扩容到 20GB（需虚拟机内再扩分区）
+
+# === 快照与备份 ===
+cinder snapshot-list
+cinder snapshot-create --name mysnap <vol-id>
+cinder snapshot-delete <snap-id>
+cinder backup-list
+cinder backup-create --name mybackup <vol-id>
+cinder backup-restore <backup-id>                    # 恢复到新云硬盘
+
+# === 状态修正 ===
+cinder reset-state --state available <vol-id>        # 重置状态（排障用）
+cinder reset-state --state error <vol-id>
+cinder force-delete <vol-id>                         # 强制删除（卡在 deleting 时）
+
+# === 类型与 QoS ===
+cinder type-list
+cinder type-create ssd                              # 创建卷类型
+cinder type-key ssd set volume_backend_name=lvm-ssd  # 设置后端
+cinder qos-list
+cinder qos-create --consumer front-end --property read_iops_sec=1000 myqos
+cinder qos-associate <qos-id> <type-id>
+
+# === 服务状态 ===
+cinder service-list
+cinder host-list                                     # 存储后端节点
+cinder get-pools                                     # 存储池信息
+```
+
+### Neutron（网络）
+
+```bash
+# === 网络 ===
+neutron net-list
+neutron net-show <net-id>
+neutron net-create mynet                             # 创建网络
+neutron net-create --provider:network_type vlan --provider:physical_network physnet1 mynet
+neutron net-delete <net-id>
+
+# === 子网 ===
+neutron subnet-list
+neutron subnet-show <subnet-id>
+neutron subnet-create mynet 192.168.1.0/24 --name mysubnet --gateway 192.168.1.1
+neutron subnet-delete <subnet-id>
+
+# === 端口 ===
+neutron port-list
+neutron port-show <port-id>
+neutron port-create mynet                            # 创建端口
+neutron port-update <port-id> --name myport
+neutron port-delete <port-id>
+
+# === 路由器 ===
+neutron router-list
+neutron router-create myrouter
+neutron router-gateway-set <router-id> <ext-net-id>   # 设置外网网关
+neutron router-gateway-clear <router-id>
+neutron router-interface-add <router-id> <subnet-id>  # 连接子网
+neutron router-interface-delete <router-id> <subnet-id>
+
+# === 浮动 IP ===
+neutron floatingip-list
+neutron floatingip-create <ext-net-id>               # 申请浮动 IP
+neutron floatingip-associate <fip-id> <port-id>      # 绑定到端口
+neutron floatingip-disassociate <fip-id>
+neutron floatingip-delete <fip-id>
+
+# === 安全组 ===
+neutron security-group-list
+neutron security-group-rule-list <sg-id>
+neutron security-group-rule-create --direction ingress --protocol tcp --port-range-min 22 --port-range-max 22 <sg-id>
+neutron security-group-rule-delete <rule-id>
+
+# === Agent 管理 ===
+neutron agent-list
+neutron agent-list | grep -E "dhcp\|l3\|openvswitch"
+neutron agent-show <agent-id>
+neutron agent-update <agent-id> --admin-state-up false  # 禁用 Agent
+neutron l3-agent-list-hosting-router <router-id>        # 路由器在哪个 L3 Agent
+neutron dhcp-agent-list-hosting-net <net-id>            # 网络在哪个 DHCP Agent
+neutron agent-delete <agent-id>                         # 删除已失联的 Agent
+
+# === 排障命令 ===
+neutron port-show <port-id> | grep binding             # 看端口绑定状态
+neutron net-show <net-id> | grep provider              # 网络类型
+neutron router-port-list <router-id>                   # 路由器上的端口
+neutron net-list-on-dhcp-agent <agent-id>              # DHCP Agent 上的网络
+neutron net-gateway-show <net-id>                      # 网关 IP
+```
+
+### Glance（镜像）
+
+```bash
+# === 镜像管理 ===
+glance image-list
+glance image-show <img-id>
+glance image-create --name centos7 --disk-format qcow2 --container-format bare --file centos7.qcow2
+glance image-update <img-id> --name new-name
+glance image-update <img-id> --property os_distro=centos
+glance image-delete <img-id>
+
+# === 成员共享 ===
+glance member-list --image-id <img-id>               # 镜像共享给哪些项目
+glance member-create <img-id> <project-id>            # 共享
+glance member-update <img-id> <project-id> accepted   # 接受
+
+# === 下载导出 ===
+glance image-download --file /tmp/centos7.qcow2 <img-id>
+glance image-upload --file /tmp/custom.qcow2 <img-id>
+```
+
+### Swift（对象存储）
+
+```bash
+# === 容器与对象 ===
+swift list                                           # 列出容器（桶）
+swift list <container>                               # 列出容器内对象
+swift stat <container>                               # 容器元信息
+swift upload <container> /path/to/file               # 上传
+swift download <container>                           # 下载整个容器
+swift download <container> file.txt                  # 下载单个文件
+swift delete <container>                             # 删除容器
+swift delete <container> file.txt                    # 删除对象
+
+# === 权限 ===
+swift post <container> -r '.r:*'                     # 公开读
+swift post <container> --read-acl 'admin:user'       # 指定用户读
+swift post <container> -H 'X-Container-Meta-Web:true' # 自定义元数据
+
+# === 临时 URL ===
+swift tempurl GET 3600 /v1/account/container/object secretkey
+# 生成有效期 1 小时的临时下载链接
+```
+
+---
+
+## 附录：组件命令与 openstack 命令对应表
+
+| 操作 | openstack CLI | 组件原生 CLI |
+|------|-------------|-------------|
+| 列出虚拟机 | `openstack server list` | `nova list` |
+| 创建虚拟机 | `openstack server create` | `nova boot` |
+| 迁移虚拟机 | `openstack server migrate` | `nova live-migration` |
+| 列出云硬盘 | `openstack volume list` | `cinder list` |
+| 创建云硬盘 | `openstack volume create` | `cinder create` |
+| 列出网络 | `openstack network list` | `neutron net-list` |
+| 创建子网 | `openstack subnet create` | `neutron subnet-create` |
+| 列出镜像 | `openstack image list` | `glance image-list` |
+| 列出容器 | `openstack container list` | `swift list` |
+
+> `openstack` 命令本质上也是调用各组件 API，组件命令更贴近底层，排障时往往能给出更精确的错误信息。
