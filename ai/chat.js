@@ -73,9 +73,18 @@ function collectCommands(results, query) {
   var qWords = query.toLowerCase().replace(/[^\u4e00-\u9fffa-z0-9]/g, ' ').split(/\s+/).filter(function(w) { return w.length > 1; });
   var all = [];
 
+  // DNS 相关命令映射（命令文本不含 "dns" 但功能是 DNS）
+  var TOPIC_MAP = {
+    dns: ['nslookup', 'dig ', 'host ', 'resolv.conf', 'resolvectl'],
+    disk: ['df ', 'du ', 'fdisk', 'lsblk', 'mount', 'iostat', 'ncdu'],
+    memory: ['free ', 'vmstat', 'oom', '/proc/meminfo'],
+    cpu: ['top', 'htop', 'mpstat', 'lscpu', '/proc/cpuinfo'],
+    network: ['ping', 'traceroute', 'mtr', 'ss -', 'netstat', 'curl', 'wget'],
+  };
+
   for (var r = 0; r < results.length; r++) {
     var text = results[r].chunk.text;
-    // 命令参考部分优先
+    var title = results[r].chunk.title.toLowerCase();
     var ci = text.indexOf('命令参考：');
     var cmdText = ci >= 0 ? text.substring(ci) : text;
 
@@ -84,13 +93,31 @@ function collectCommands(results, query) {
       return l && /^[a-z]/.test(l) && l.length > 5 && l.length < 400 && !/^[a-z]+$/.test(l);
     });
 
-    for (var c = 0; c < Math.min(lines.length, 6); c++) {
-      var cmd = lines[c].trim();
+    for (var c = 0; c < Math.min(lines.length, 8); c++) {
+      var cmd = lines[c].trim().toLowerCase();
       var score = results[r].score;
+
+      // 基础：命令含查询词
       for (var w = 0; w < qWords.length; w++) {
-        if (cmd.toLowerCase().indexOf(qWords[w]) >= 0) score += 2;
+        if (cmd.indexOf(qWords[w]) >= 0) score += 3;
       }
-      all.push({ cmd: cmd, score: score, source: results[r].chunk });
+
+      // 主题映射：查询词属于某个主题，且命令在该主题列表中
+      for (var w = 0; w < qWords.length; w++) {
+        var qw = qWords[w];
+        if (TOPIC_MAP[qw]) {
+          for (var t = 0; t < TOPIC_MAP[qw].length; t++) {
+            if (cmd.indexOf(TOPIC_MAP[qw][t]) >= 0) score += 2;
+          }
+        }
+      }
+
+      // 块标题匹配查询词
+      for (var w = 0; w < qWords.length; w++) {
+        if (title.indexOf(qWords[w]) >= 0) score += 2;
+      }
+
+      all.push({ cmd: lines[c].trim(), score: score, source: results[r].chunk });
     }
   }
 

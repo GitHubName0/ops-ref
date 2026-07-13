@@ -13,7 +13,7 @@
 const fs = require('fs');
 const path = require('path');
 
-const OPS_DIR = path.resolve(__dirname, '..', 'manual');
+const OPS_DIR = path.resolve(__dirname, '..', 'ops-ref');
 const OUTPUT = path.join(__dirname, 'embeddings.json');
 
 // 读取章节配置
@@ -60,10 +60,11 @@ function splitIntoChunks(md, chapterName) {
       continue;
     }
 
-    const headingMatch = line.match(/^(#{2,4})\s+(.+)/);
+    const headingMatch = line.match(/^(#{1,4})\s+(.+)/);
     if (headingMatch) {
       const level = headingMatch[1].length;
-      // H2/H3 总是分割，H4 如果当前块超过 200 字符也分割
+      // 跳过章节主标题（第一个 H1 已经是 currentTitle）
+      // H1-H3 总是分割，H4 当前块超过 200 字符也分割
       if (level <= 3 || currentText.length > 200) {
         saveChunk();
       }
