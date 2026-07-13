@@ -1,5 +1,24 @@
 # Changelog
 
+## v1.5.2 (2026-07-13)
+
+### 修复
+- AI 问答：`DNS 查询` 不再返回 ping/telnet（新增 TOPIC_MAP 主题命令映射，dig/nslookup/host 自动加分）
+- AI 问答：知识块分割器扩展 H1 标题捕获（`#{1,4}`），更细粒度分块
+- 过滤标签：修复 Linux/K8s 点击无反应（`initDomainFilter` 查 h1+h2）
+
+### 优化
+- AI 问答：结构化回答模板（📌 标题 + 摘要 + 🔧 命令 + 📖 来源 + 👍/👎 反馈）
+- AI 问答：弱匹配分数阈值（最佳分 < 1 不展示）
+- AI 问答：移除人为延迟，即时响应
+- 安全声明：H1 下方红色免责横幅 + 过滤标签下橙色提示
+- 版本信息合并：header 显示 `v1.5.2 · 2026-07-13`
+
+### 项目
+- GitHub 仓库：公开上线 `GitHubName0/ops-ref`，中英双语 README
+- 掘金推广文章就绪
+- 15 个精准 Topics 标签（sre/devops/offline-first/litert 等）
+
 ## v1.5.1 (2026-07-13)
 
 ### 新增
