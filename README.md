@@ -1,6 +1,9 @@
 <p align="center">
   <h1 align="center">🐧 ops-ref</h1>
   <p align="center">
+    <a href="README.md">English</a> | <a href="README_zh.md">中文</a>
+  </p>
+  <p align="center">
     <strong>Offline Ops Command Reference</strong> — 13 chapters, 7500+ commands<br>
     <strong>+ AI Q&A Assistant</strong> — LiteRT.js ready, runs entirely in your browser
   </p>
