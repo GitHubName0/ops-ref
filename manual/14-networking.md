@@ -446,7 +446,119 @@ ip6tables -L -n -v
 
 ---
 
-### 8. 云平台虚拟网络抓包
+### 8. 虚拟网络原理与抓包路径
+
+> 理解包怎么走，才知道在哪抓。本节不涉及具体命令，只讲原理。
+
+#### 物理网络 vs 虚拟网络
+
+```
+物理服务器：                    虚拟化环境：
+  ┌─────┐                        ┌──────────────┐
+  │ VM1 │                        │  VM1  │ VM2  │
+  ├─────┤                        ├───────┴──────┤
+  │ OS  │                        │tap1      tap2│  ← tap 设备
+  ├─────┤                        ├──────┬───────┤
+  │ NIC │  ← 物理网卡            │  Linux Bridge │  ← 虚拟交换机
+  └──┬──┘                        ├───────┴──────┤
+     │                            │  宿主机 NIC   │
+  ═══╪═══ 网线                   ═══════╪═══════ 网线
+     │                                    │
+```
+
+#### 包在虚拟化环境中的旅程
+
+以 OpenStack 虚拟机发出一个 HTTP 请求为例：
+
+```
+阶段1: VM → tap 设备
+  VM 的 eth0 发送帧 → KVM 把它放到宿主机的 tap0 设备上
+  抓包点: tcpdump -i tap0
+
+阶段2: tap → Linux Bridge（安全组）
+  tap0 连在 qbrXXX 网桥上，iptables 规则在此过滤
+  抓包点: tcpdump -i qbrXXX
+
+阶段3: Bridge → veth peer → OVS
+  qbrXXX 通过 veth pair (qvb→qvo) 连到 OVS br-int
+  抓包点: tcpdump -i qvoXXX / tcpdump -i br-int
+
+阶段4: OVS br-int → br-tun（隧道封装）
+  东西向流量进入 br-tun，打上 VXLAN 头（VNI + 外层 IP）
+  抓包点: tcpdump -i br-tun
+
+阶段5: br-tun → 物理网卡 → 网络
+  VXLAN 包作为普通 UDP 帧从 eth0 发出
+  抓包点: tcpdump -i eth0 'udp port 4789'
+```
+
+#### 关键概念：网络命名空间
+
+```
+宿主机有多个"平行网络栈"——每个命名空间有独立的路由表、iptables、网卡
+
+ip netns list
+  qrouter-xxx    ← 路由器命名空间（有独立路由表、浮动 IP NAT）
+  qdhcp-xxx      ← DHCP 命名空间（dnsmasq 进程在此运行）
+
+# 在命名空间内执行命令
+ip netns exec qrouter-xxx ip addr    # 看命名空间内的 IP
+ip netns exec qrouter-xxx iptables -L -n -t nat  # 看 NAT 规则
+```
+
+#### 各层虚拟设备对照
+
+```
+层次        设备类型        例子              作用
+────────────────────────────────────────────────────
+VM 侧       tap             tapabc123          虚拟机的"网线头"
+安全组      Linux bridge    qbrabc123          iptables 在这里过滤
+veth pair   veth            qvb↔qvo            连接 bridge 和 OVS
+OVS 层      OVS bridge      br-int / br-tun    OpenFlow 流表转发
+隧道        VXLAN           vxlan-xxx          跨宿主机封装
+命名空间    (隔离)          qrouter / qdhcp    独立网络栈
+```
+
+#### 抓包决策树
+
+```
+虚拟机网络有问题
+  │
+  ├─ 是 DHCP 获取不到 IP？
+  │     ├─ VM 发出 DHCP DISCOVER 了吗？
+  │     │     └─ tcpdump -i tap<id> port 67 or 68   ← 抓 VM 侧
+  │     └─ DHCP Agent 收到了吗？
+  │           └─ ip netns exec qdhcp tcpdump          ← 抓 DHCP ns
+  │
+  ├─ 是 VM 间不通？
+  │     ├─ 同宿主机？
+  │     │     └─ tcpdump -i br-int                   ← 抓 OVS
+  │     └─ 跨宿主机？
+  │           ├─ tcpdump -i br-tun                   ← 抓隧道
+  │           └─ ovs-ofctl dump-flows br-tun         ← 查流表
+  │
+  ├─ 是外网不通？
+  │     ├─ 浮动 IP 绑定了吗？
+  │     ├─ tcpdump -i eth0 host <fip>                ← 抓物理网卡
+  │     └─ ip netns exec qrouter iptables -t nat -L  ← 查 NAT
+  │
+  └─ 是安全组拦截？
+        ├─ tcpdump -i qbr<id>                        ← 抓 bridge 两端对比
+        └─ iptables -L -n -v | grep <ip>             ← 查规则计数
+```
+
+#### 核心原则
+
+```
+1. 逐层抓包：从最靠近 VM 的 tap 开始，一层一层往外抓，找到包消失在哪层
+2. 命名空间隔离：路由/DHCP/NAT 都在独立命名空间里，要用 ip netns exec 进入
+3. OVS 流表是王道：包丢了先 dump-flows，流表没匹配 = 包被 drop
+4. 两端对比：源端发出、目标端收到 = 对比两端的包，定位中间丢包点
+```
+
+---
+
+### 9. 云平台虚拟网络抓包
 
 > 虚拟机网络经过多层虚拟设备（tap/veth/bridge/ovs/vxlan），抓包位置选错 = 抓到空包。
 
