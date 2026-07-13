@@ -443,3 +443,214 @@ ping6 -M do -s 1452 2001:db8::1                      # 禁止分片测试
 # 7. 防火墙
 ip6tables -L -n -v
 ```
+
+---
+
+### 8. 云平台虚拟网络抓包
+
+> 虚拟机网络经过多层虚拟设备（tap/veth/bridge/ovs/vxlan），抓包位置选错 = 抓到空包。
+
+#### 虚拟网络设备速查
+
+```bash
+# 查看所有网络设备
+ip link show                                         # 所有接口
+ip link show type bridge                             # 只看网桥
+ip link show type veth                               # 只看 veth peer
+ip link show type vxlan                              # 只看 vxlan
+
+# 关键设备类型
+# br-int / br-ex       — OVS 集成/外部网桥（OpenStack）
+# br0 / virbr0         — Linux bridge（KVM/libvirt）
+# qbr-xxx              — OpenStack 安全组网桥
+# qvb-xxx / qvo-xxx    — OpenStack veth peer
+# tap-xxx              — 虚拟机 tap 设备
+# vnet0 / vnet1        — KVM 虚拟机网卡
+# docker0              — Docker 默认网桥
+# veth-xxx             — Docker/容器 veth peer
+```
+
+#### OpenStack 网络路径抓包
+
+```bash
+# OpenStack 虚拟机出方向的网络路径：
+# VM eth0 → tap-xxx → qbr-xxx(bridge) → qvo-xxx(veth) → br-int(OVS) → br-tun(OVS) → eth0
+
+# 1. 找出虚拟机对应的 tap 设备
+virsh domiflist <instance-id>                        # KVM 层面
+# 或
+nova interface-list <vm-id>                          # OpenStack 层面
+# tap 设备名通常格式：tap<port-uuid前11位>
+
+# 2. 在 tap 设备上抓包（最靠近 VM 的位置）
+tcpdump -i tap<uuid> -nne -c 50
+tcpdump -i tap<uuid> host 10.0.0.5 -w /tmp/vm_tap.pcap
+
+# 3. 在安全组网桥上抓包（看安全组是否丢包）
+tcpdump -i qbr<uuid> -nne -c 50
+tcpdump -i qbr<uuid> icmp                              # 只看 ICMP
+
+# 4. 在 OVS 集成网桥上抓包（看所有 VM 流量）
+tcpdump -i br-int -nne -c 100
+tcpdump -i br-int host 10.0.0.5 -w /tmp/br_int.pcap
+
+# 5. 在物理网卡上抓包（看是否发出去了）
+tcpdump -i eth0 host <floating-ip> -nne -c 50
+tcpdump -i eth0 vlan <vlan-id>                         # VLAN 网络
+tcpdump -i eth0 'udp port 4789'                        # VXLAN 隧道
+
+# 6. 网络命名空间内抓包（DHCP / 路由器）
+ip netns list                                          # 列出命名空间
+ip netns exec qrouter-<id> tcpdump -i qr-xxx -nne -c 50
+ip netns exec qdhcp-<id> tcpdump -i tap-xxx port 67    # DHCP 流量
+```
+
+**抓包位置速查：虚拟机网络不通时逐个位置抓**
+
+```
+位置                     命令                              能看到什么
+─────────────────────────────────────────────────────────────────
+VM 网卡                  tcpdump -i tap<id>                  VM 发出的所有包
+安全组网桥               tcpdump -i qbr<id>                  安全组过滤前/后
+OVS 集成网桥             tcpdump -i br-int                   所有 VM 的东西向流量
+OVS 隧道网桥             tcpdump -i br-tun                   VXLAN/GRE 封装后
+路由器命名空间           ip netns exec qrouter tcpdump       路由/NAT/浮动 IP
+DHCP 命名空间            ip netns exec qdhcp tcpdump         DHCP 请求/响应
+物理网卡                 tcpdump -i eth0                     是否发出/收到外部包
+```
+
+#### OVS 排障命令
+
+```bash
+# OVS 网桥与端口
+ovs-vsctl show                                       # 完整拓扑
+ovs-vsctl list-br                                    # 列出网桥
+ovs-vsctl list-ports br-int                          # 列出端口
+ovs-ofctl show br-int                                # OpenFlow 信息
+ovs-ofctl dump-flows br-int                          # 流表（重要！）
+ovs-ofctl dump-flows br-int | grep <ip>              # 过滤某 IP 的流表
+ovs-ofctl dump-flows br-tun table=0                  # 隧道网桥流表
+
+# 端口信息
+ovs-vsctl list interface <port>                      # 接口详情
+ovs-vsctl list interface <port> | grep -E "ofport|type|error"
+ovs-appctl fdb/show br-int                           # MAC 地址表
+
+# 统计与排障
+ovs-ofctl dump-ports br-int                          # 端口统计
+ovs-dpctl show                                        # datapath 信息
+ovs-dpctl dump-flows                                  # datapath 流表（内核层）
+ovs-appctl dpif/show                                  # datapath 接口
+
+# OVS 日志
+tail -100 /var/log/openvswitch/ovs-vswitchd.log
+journalctl -u openvswitch-switch --since "10 min ago"
+```
+
+#### KVM / libvirt 网络抓包
+
+```bash
+# 查看 VM 的虚拟网卡
+virsh domiflist <vm>                                  # MAC + 类型 + 设备名
+virsh dumpxml <vm> | grep -A5 "interface"             # XML 中的网络配置
+
+# KVM 网络设备命名
+# vnet0, vnet1...  — 虚拟机运行时在宿主机上创建的 tap 设备
+# virbr0            — libvirt 默认 NAT 网桥
+
+# 1. 在 vnet 设备上抓包（最直接）
+tcpdump -i vnet0 -nne -c 50
+tcpdump -i vnet0 host 192.168.122.100 -w /tmp/vm.pcap
+
+# 2. 在 libvirt 网桥上抓包（所有 NAT 网络 VM）
+tcpdump -i virbr0 -nne -c 50
+brctl show virbr0                                    # 看网桥上有哪些接口
+
+# 3. 在宿主机物理网桥上抓包（桥接模式）
+tcpdump -i br0 host <vm-ip> -nne
+tcpdump -i br0 'ether host <vm-mac>'                  # 按 MAC 过滤
+
+# 4. 查看 bridge 信息
+bridge link show                                      # 所有网桥端口
+bridge fdb show br0                                   # MAC 转发表
+```
+
+#### Docker / 容器网络抓包
+
+```bash
+# 找出容器对应的 veth
+docker inspect <container> | grep -i sandbox           # SandboxKey
+ip link show | grep veth                               # 列出所有 veth
+# 或直接进容器网络命名空间
+docker inspect -f '{{.State.Pid}}' <container>         # 获取 PID
+nsenter -t <pid> -n tcpdump -i eth0 -nne -c 50         # 在容器网络栈抓包
+
+# 在 veth peer 宿主机端抓包
+# veth pair 一端在容器(eth0)，一端在宿主机(vethXXXXX)
+ip link show type veth | grep -B1 <container-id>       # 找 veth pair
+tcpdump -i vethXXXXX -nne -c 50
+
+# 在 docker 网桥上抓包
+tcpdump -i docker0 -nne -c 50
+tcpdump -i docker0 host 172.17.0.3
+
+# 自定义网络上抓包
+docker network ls
+docker network inspect <network>                       # 看子网和容器
+tcpdump -i br-<network-id> -nne
+```
+
+#### 实战：排查 OpenStack 虚拟机 DHCP 获取不到 IP
+
+```bash
+# 1. 找到 VM 对应的 tap 设备
+virsh domiflist <instance-id>                          # 或 nova interface-list
+
+# 2. 在 tap 上抓 DHCP
+tcpdump -i tap<uuid> port 67 or port 68 -nne -v
+# 看有没有 DHCP DISCOVER 发出
+
+# 3. 如果有 DISCOVER 但无 OFFER：问题在 DHCP Agent
+# 进入 DHCP 命名空间抓包
+NETNS=$(ip netns | grep dhcp)
+ip netns exec $NETNS tcpdump -i tap-xxx port 67 or port 68 -nne
+
+# 4. 查看 DHCP Agent 日志
+grep -i dhcp /var/log/neutron/neutron-dhcp-agent.log | tail -20
+
+# 5. 检查 dnsmasq 进程
+ps aux | grep dnsmasq | grep <network-id>
+ip netns exec $NETNS cat /var/lib/neutron/dhcp/<net-id>/opts  # DHCP 配置
+```
+
+#### 实战：跨宿主机 VM 通信不通（VXLAN / OVS）
+
+```bash
+# 1. 确认两端 VM 的 tap 设备
+ssh compute-01 "virsh domiflist <vm1>"
+ssh compute-02 "virsh domiflist <vm2>"
+
+# 2. 在源端抓包，看是否发出
+ssh compute-01 "tcpdump -i tap<id1> host <dst-ip> -nne -c 10"
+
+# 3. 在 OVS 隧道网桥上抓包，看 VXLAN 封装
+ssh compute-01 "tcpdump -i br-tun -nne -c 20"
+ssh compute-01 "tcpdump -i br-tun 'udp port 4789' -nne"  # VXLAN 包
+
+# 4. 在物理网卡上抓 VXLAN
+ssh compute-01 "tcpdump -i eth0 'udp port 4789' -nne -c 20"
+
+# 5. 在目标端物理网卡和 tap 上确认收到
+ssh compute-02 "tcpdump -i eth0 'udp port 4789' -nne -c 10"
+ssh compute-02 "tcpdump -i tap<id2> host <src-ip> -nne -c 10"
+
+# 6. 检查 OVS 流表
+ssh compute-01 "ovs-ofctl dump-flows br-tun | grep <dst-ip>"
+ssh compute-02 "ovs-ofctl dump-flows br-tun | grep <dst-ip>"
+# 流表缺失或不正确 = 包被丢弃
+
+# 7. 检查 VTEP 隧道状态
+ovs-vsctl show | grep -A2 "Port vxlan"
+ovs-appctl tnl/arp/show                               # VXLAN ARP 表
+ovs-appctl tnl/neigh/show                             # VXLAN 邻居表
+```
