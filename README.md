@@ -17,6 +17,9 @@
   <img src="https://img.shields.io/badge/LiteRT.js-ready-purple" alt="LiteRT.js">
 </p>
 
+<!-- SEO: GitHub indexes the first ~500 characters of README for search ranking -->
+> **Linux command reference, Kubernetes cheatsheet, Docker & DevOps toolkit, offline documentation, LiteRT.js edge AI** — ops-ref is a **zero-dependency offline ops command cheatsheet** covering Linux troubleshooting, system administration, container orchestration, database management, security hardening, Nginx web server, Git version control, Prometheus monitoring, and Ansible automation. Built as a **single HTML file** (~280KB) with **dark mode, mobile responsive, pinyin search, favorites, and a CLI terminal tool**. The companion AI Q&A module uses keyword retrieval (LiteRT.js model integration on roadmap) for natural language ops questions — all running **completely offline in your browser with no server, no API keys, and no internet required**.
+
 ---
 
 ## 🤔 Why This Exists
