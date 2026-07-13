@@ -1,0 +1,399 @@
+#!/bin/bash
+# ============================================================
+# Ops Ref — 离线运维手册交互脚本  v1.3.0
+# 用法：./ops [命令] [参数]
+# 功能：交互式浏览、搜索运维命令手册
+# 依赖：bash 4+、less、grep（所有 Linux 默认包含）
+# ============================================================
+
+set -euo pipefail
+
+# 解析脚本真实路径（支持通过软链接执行）
+SCRIPT_SELF="$(readlink -f "$0" 2>/dev/null || realpath "$0" 2>/dev/null || echo "$0")"
+SCRIPT_DIR="$(cd "$(dirname "$SCRIPT_SELF")" && pwd)"
+
+# 加载共享章节定义（与 build.sh 共用）
+if [[ -f "$SCRIPT_DIR/chapters.sh" ]]; then
+  source "$SCRIPT_DIR/chapters.sh"
+else
+  echo "错误: 找不到 chapters.sh" >&2
+  exit 1
+fi
+
+VERSION="$(cat "$SCRIPT_DIR/VERSION" 2>/dev/null || echo 'unknown')"
+
+# 颜色（如果终端支持）
+if [[ -t 1 ]] && command -v tput &>/dev/null; then
+  C_RED=$(tput setaf 1)
+  C_GREEN=$(tput setaf 2)
+  C_YELLOW=$(tput setaf 3)
+  C_BLUE=$(tput setaf 4)
+  C_CYAN=$(tput setaf 6)
+  C_BOLD=$(tput bold)
+  C_RESET=$(tput sgr0)
+else
+  C_RED= C_GREEN= C_YELLOW= C_BLUE= C_CYAN= C_BOLD= C_RESET=
+fi
+
+# ============================================================
+# 内部函数
+# ============================================================
+
+usage() {
+  cat <<EOF
+${C_BOLD}Ops Ref ${VERSION}${C_RESET} — 离线运维命令速查手册
+
+${C_BOLD}用法:${C_RESET}
+  $(basename "$0") [命令] [参数]
+
+${C_BOLD}命令:${C_RESET}
+  list                    列出所有章节
+  show <序号/关键词>      查看指定章节（如: ops show 05）
+  search <关键词>         全文搜索（带上下文）
+  menu                    交互式菜单（默认）
+  check                   自诊断检查
+  -h | --help             显示此帮助
+  -V | --version          显示版本
+
+${C_BOLD}示例:${C_RESET}
+  $(basename "$0")                       # 进入交互菜单
+  $(basename "$0") list                  # 列出章节
+  $(basename "$0") show 05               # 查看 Ansible 章节
+  $(basename "$0") show ansible          # 同上
+  $(basename "$0") search tcpdump        # 搜索 tcpdump 相关内容
+  $(basename "$0") search "OOM\|内存"    # 搜索 OOM 或内存相关
+  $(basename "$0") check                 # 自诊断
+
+${C_BOLD}提示:${C_RESET}
+  建议设置别名:  echo 'alias ops=\"${C_YELLOW}$(cd "$SCRIPT_DIR" && pwd)${C_RESET}/ops\"' >> ~/.bashrc
+EOF
+  exit 0
+}
+
+show_version() {
+  echo "Ops Ref ${VERSION}"
+  exit 0
+}
+
+# 列出所有章节
+list_chapters() {
+  echo ""
+  echo "${C_BOLD}Ops Ref ${VERSION} — 章节列表${C_RESET}"
+  echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+  for entry in "${CHAPTERS[@]}"; do
+    local file="${entry%%:*}"
+    local name="${entry#*:}"
+    local num="${file%%-*}"
+    if [[ -f "$SCRIPT_DIR/$file" ]]; then
+      local lines
+      lines=$(wc -l < "$SCRIPT_DIR/$file")
+      printf "  ${C_CYAN}%s${C_RESET}  %-30s ${C_GREEN}(%4d 行)${C_RESET}\n" "$num" "$name" "$lines"
+    else
+      printf "  ${C_CYAN}%s${C_RESET}  %-30s ${C_RED}(文件缺失)${C_RESET}\n" "$num" "$name"
+    fi
+  done
+  echo ""
+}
+
+# 查找章节文件（支持序号或关键词）
+resolve_chapter() {
+  local input="$1"
+  # 先按序号精确匹配
+  for entry in "${CHAPTERS[@]}"; do
+    local file="${entry%%:*}"
+    if [[ "$file" == "$input-"* ]] || [[ "$file" == "$input.md" ]]; then
+      echo "$file"
+      return 0
+    fi
+  done
+  # 按关键词模糊匹配
+  for entry in "${CHAPTERS[@]}"; do
+    local file="${entry%%:*}"
+    local name="${entry#*:}"
+    if echo "$name" | grep -qi "$input"; then
+      echo "$file"
+      return 0
+    fi
+  done
+  return 1
+}
+
+# 查看章节内容
+show_chapter() {
+  local input="$1"
+  local file
+  file=$(resolve_chapter "$input") || {
+    echo "${C_RED}错误: 未找到匹配的章节「$input」${C_RESET}"
+    echo "可用章节：$(basename "$0") list"
+    return 1
+  }
+  local path="$SCRIPT_DIR/$file"
+  if [[ ! -f "$path" ]]; then
+    echo "${C_RED}错误: 文件不存在 $file${C_RESET}"
+    return 1
+  fi
+  # 如果终端支持，用 less 分页查看，否则直接 cat
+  if command -v less &>/dev/null && [[ -t 1 ]]; then
+    less -R "$path"
+  else
+    cat "$path"
+  fi
+}
+
+# 全文搜索（修复 subshell pipe bug）
+search_all() {
+  local keyword="$1"
+  if [[ -z "$keyword" ]]; then
+    echo "${C_RED}错误: 请输入搜索关键词${C_RESET}"
+    return 1
+  fi
+  echo ""
+  echo "${C_BOLD}搜索结果: ${keyword}${C_RESET}"
+  echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+  local found=0
+  for entry in "${CHAPTERS[@]}"; do
+    local file="${entry%%:*}"
+    local name="${entry#*:}"
+    local path="$SCRIPT_DIR/$file"
+    [[ ! -f "$path" ]] && continue
+    # 用 grep 搜索，输出文件名和匹配行
+    local matches
+    matches=$(grep -ni -- "$keyword" "$path" 2>/dev/null || true)
+    if [[ -n "$matches" ]]; then
+      echo ""
+      echo "${C_CYAN}▸ $name ($file)${C_RESET}"
+      # 修复：用 here-string 替代管道，避免子 shell 导致 found 计数丢失
+      while IFS= read -r line; do
+        local line_num="${line%%:*}"
+        local content="${line#*:}"
+        # 截取过长行
+        if [[ ${#content} -gt 100 ]]; then
+          content="${content:0:97}..."
+        fi
+        printf "  ${C_YELLOW}L%-4s${C_RESET} %s\n" "$line_num" "$content"
+        ((found++)) || true   # 首次 found=0 时 ((0++)) 返回 1，用 || true 防 set -e
+      done <<< "$matches"
+    fi
+  done
+  if [[ $found -eq 0 ]]; then
+    echo ""
+    echo "  ${C_YELLOW}未找到匹配「${keyword}」的内容${C_RESET}"
+    echo "  提示：检查拼写，或尝试更短的关键词"
+  else
+    echo ""
+    echo "  ${C_GREEN}共找到 ${found} 条匹配${C_RESET}"
+  fi
+  echo ""
+}
+
+# 自诊断检查
+self_check() {
+  echo ""
+  echo "${C_BOLD}Ops Ref ${VERSION} — 自诊断${C_RESET}"
+  echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+  local errors=0
+  local warnings=0
+
+  # 1. 检查脚本语法
+  if bash -n "$SCRIPT_SELF" 2>/dev/null; then
+    echo "  ${C_GREEN}✓${C_RESET} 脚本语法正确"
+  else
+    echo "  ${C_RED}✗${C_RESET} 脚本语法错误"
+    ((errors++))
+  fi
+
+  # 2. 检查章节文件完整性
+  echo ""
+  echo "  ${C_BOLD}章节文件:${C_RESET}"
+  for entry in "${CHAPTERS[@]}"; do
+    local file="${entry%%:*}"
+    local name="${entry#*:}"
+    if [[ -f "$SCRIPT_DIR/$file" ]]; then
+      local lines
+      lines=$(wc -l < "$SCRIPT_DIR/$file")
+      if [[ $lines -gt 10 ]]; then
+        echo "    ${C_GREEN}✓${C_RESET} $file ($name) — $lines 行"
+      else
+        echo "    ${C_YELLOW}⚠${C_RESET} $file ($name) — 仅 $lines 行，内容可能不完整"
+        ((warnings++))
+      fi
+    else
+      echo "    ${C_RED}✗${C_RESET} $file ($name) — 文件缺失"
+      ((errors++))
+    fi
+  done
+
+  # 3. 检查依赖
+  echo ""
+  echo "  ${C_BOLD}依赖检查:${C_RESET}"
+  for cmd in grep less wc cat; do
+    if command -v $cmd &>/dev/null; then
+      echo "    ${C_GREEN}✓${C_RESET} $cmd"
+    else
+      echo "    ${C_RED}✗${C_RESET} $cmd — 缺失（核心依赖）"
+      ((errors++))
+    fi
+  done
+
+  # 4. 检查 chapters.sh
+  echo ""
+  if [[ -f "$SCRIPT_DIR/chapters.sh" ]]; then
+    local chap_count=${#CHAPTERS[@]}
+    echo "  ${C_GREEN}✓${C_RESET} chapters.sh 存在，定义 $chap_count 个章节"
+  else
+    echo "  ${C_RED}✗${C_RESET} chapters.sh 缺失"
+    ((errors++))
+  fi
+
+  # 5. 检查 index.md
+  echo ""
+  if [[ -f "$SCRIPT_DIR/index.md" ]]; then
+    local idx_lines
+    idx_lines=$(wc -l < "$SCRIPT_DIR/index.md")
+    echo "  ${C_GREEN}✓${C_RESET} index.md 存在 ($idx_lines 行)"
+  else
+    echo "  ${C_YELLOW}⚠${C_RESET} index.md 不存在（运行 build.sh 生成）"
+    ((warnings++))
+  fi
+
+  # 汇总
+  echo ""
+  echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+  if [[ $errors -eq 0 && $warnings -eq 0 ]]; then
+    echo "${C_GREEN}诊断通过 — 一切正常${C_RESET}"
+  elif [[ $errors -eq 0 ]]; then
+    echo "${C_YELLOW}诊断通过 — $warnings 个警告${C_RESET}"
+  else
+    echo "${C_RED}诊断失败 — $errors 个错误, $warnings 个警告${C_RESET}"
+  fi
+  echo ""
+
+  return $errors
+}
+
+# 交互式菜单（不破坏 scrollback）
+interactive_menu() {
+  local version="$VERSION"
+  local first_run=true
+  while true; do
+    # 只在首次清屏（可选），后续不清
+    echo ""
+    echo "${C_BOLD}🐧 Ops Ref ${version}${C_RESET}"
+    echo "━━━━━━━━━━━━━━━━━━━━━━━━━"
+    echo ""
+
+    # 显示章节列表
+    local i=1
+    local items=()
+    for entry in "${CHAPTERS[@]}"; do
+      local file="${entry%%:*}"
+      local name="${entry#*:}"
+      local num="${file%%-*}"
+      items+=("$num")
+      if [[ -f "$SCRIPT_DIR/$file" ]]; then
+        printf "  ${C_CYAN}%2d)${C_RESET}  %s\n" "$i" "$name"
+      else
+        printf "  ${C_CYAN}%2d)${C_RESET}  %s ${C_RED}(文件缺失)${C_RESET}\n" "$i" "$name"
+      fi
+      ((i++))
+    done
+    echo "  ${C_YELLOW} s)${C_RESET}  搜索"
+    echo "  ${C_YELLOW} c)${C_RESET}  自诊断"
+    echo "  ${C_YELLOW} q)${C_RESET}  退出"
+    echo ""
+
+    # 修复：ANSI 码与 read -p 分离，避免终端渲染乱码
+    printf "  ${C_BOLD}选择 [1-$((i-1)) 或 s/c/q]: ${C_RESET}"
+    read -r choice
+
+    case "$choice" in
+      q|Q|quit|exit)
+        echo "bye!"
+        break
+        ;;
+      s|S|search|/)
+        printf "  搜索关键词: "
+        read -r keyword
+        if [[ -n "$keyword" ]]; then
+          search_all "$keyword"
+          echo ""
+          printf "  按 Enter 返回菜单..."
+          read -r
+        fi
+        ;;
+      c|C|check)
+        self_check
+        echo ""
+        printf "  按 Enter 返回菜单..."
+        read -r
+        ;;
+      ''|*[!0-9]*)
+        continue
+        ;;
+      *)
+        local idx=$((choice - 1))
+        if [[ $idx -ge 0 && $idx -lt ${#items[@]} ]]; then
+          local file
+          file=$(resolve_chapter "${items[$idx]}") || true
+          if [[ -n "$file" && -f "$SCRIPT_DIR/$file" ]]; then
+            less -R "$SCRIPT_DIR/$file"
+          fi
+        fi
+        ;;
+    esac
+  done
+}
+
+# ============================================================
+# 入口
+# ============================================================
+
+# 无参数 → 交互菜单
+if [[ $# -eq 0 ]]; then
+  interactive_menu
+  exit 0
+fi
+
+case "${1:-}" in
+  -h|--help|help)
+    usage
+    ;;
+  -V|--version|version)
+    show_version
+    ;;
+  list|l)
+    list_chapters
+    ;;
+  show|view|s)
+    if [[ -z "${2:-}" ]]; then
+      list_chapters
+      echo ""
+      printf "输入序号或关键词: "
+      read -r input
+      show_chapter "$input"
+    else
+      shift
+      show_chapter "$1"
+    fi
+    ;;
+  search|grep|find)
+    if [[ -z "${2:-}" ]]; then
+      printf "搜索关键词: "
+      read -r keyword
+      search_all "$keyword"
+    else
+      shift
+      search_all "$1"
+    fi
+    ;;
+  menu|interactive)
+    interactive_menu
+    ;;
+  check|diagnose|diag)
+    self_check
+    ;;
+  *)
+    echo "${C_RED}未知命令: $1${C_RESET}"
+    usage
+    ;;
+esac
