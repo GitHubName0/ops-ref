@@ -266,3 +266,180 @@ curl -o /dev/null -s -w '
 | 连接超时 | 防火墙 DROP/路由不通 | `traceroute` → `iptables -L -n` |
 | SSL 证书错误 | 证书过期/域名不匹配 | `curl -v` → `openssl s_client` |
 | HTTP 502/504 | 后端挂了/超时 | `tcpdump port 后端端口` → 后端日志 |
+
+---
+
+### 7. IPv4 与 IPv6
+
+#### IPv4 基础
+
+```bash
+# IP 地址分类与私有地址段
+# A 类: 10.0.0.0/8         (10.0.0.0 ~ 10.255.255.255)
+# B 类: 172.16.0.0/12      (172.16.0.0 ~ 172.31.255.255)
+# C 类: 192.168.0.0/16     (192.168.0.0 ~ 192.168.255.255)
+# 回环: 127.0.0.0/8
+# 链路本地: 169.254.0.0/16  (DHCP 失败时自动分配)
+
+# CIDR 速算
+# /24 = 256 个地址 (254 可用)   子网掩码 255.255.255.0
+# /25 = 128 个地址 (126 可用)   子网掩码 255.255.255.128
+# /26 = 64 个地址  (62 可用)    子网掩码 255.255.255.192
+# /27 = 32 个地址  (30 可用)    子网掩码 255.255.255.224
+# /28 = 16 个地址  (14 可用)    子网掩码 255.255.255.240
+```
+
+```bash
+# 查看 IPv4 配置
+ip -4 addr show                                     # 只看 IPv4
+ip -4 route                                         # IPv4 路由表
+ip -4 neigh                                         # IPv4 ARP 表
+
+# 添加/删除 IPv4 地址
+ip addr add 192.168.1.100/24 dev eth0               # 临时添加
+ip addr del 192.168.1.100/24 dev eth0               # 删除
+
+# 添加/删除路由
+ip route add 10.0.0.0/8 via 192.168.1.1             # 静态路由
+ip route add default via 192.168.1.1                 # 默认网关
+ip route del 10.0.0.0/8
+
+# ARP 操作
+ip neigh show                                        # 查看 ARP 缓存
+ip neigh add 192.168.1.10 lladdr aa:bb:cc:dd:ee:ff dev eth0  # 静态 ARP
+ip neigh del 192.168.1.10 dev eth0                   # 删除条目
+ip neigh flush dev eth0                              # 清空接口 ARP
+```
+
+#### IPv6 基础
+
+```bash
+# 地址类型
+# 全球单播:   2000::/3     (公网地址，类似 IPv4 公网)
+# 链路本地:   fe80::/10    (每个接口自动生成，仅本链路有效，类似 169.254)
+# 唯一本地:   fc00::/7     (私有地址，类似 10.x / 172.16 / 192.168)
+# 回环:       ::1/128      (类似 127.0.0.1)
+# 组播:       ff00::/8
+
+# 地址格式
+# 2001:db8:0:1::5/64       — 完整格式
+# ::1                       — 压缩格式 (= 0000:...:0001)
+# fe80::1%eth0              — 链路本地 + 接口标识
+# 省略规则：连续的 0000 块可用 :: 替代（只能一次），前导零可省略
+```
+
+```bash
+# 查看 IPv6 配置
+ip -6 addr show                                     # 只看 IPv6
+ip -6 route                                         # IPv6 路由表
+ip -6 neigh                                         # IPv6 邻居表（替代 ARP）
+
+# 添加/删除 IPv6 地址
+ip addr add 2001:db8::5/64 dev eth0
+ip addr del 2001:db8::5/64 dev eth0
+
+# 添加/删除路由
+ip -6 route add 2001:db8:1::/48 via 2001:db8::1
+ip -6 route add default via 2001:db8::1
+
+# 邻居发现（替代 ARP）
+ip -6 neigh show                                     # 查看邻居缓存
+ip -6 neigh add 2001:db8::5 lladdr aa:bb:cc:dd:ee:ff dev eth0
+```
+
+#### 常用 IPv6 测试命令
+
+```bash
+# 连通性
+ping6 2001:db8::1                                   # IPv6 ping
+ping6 -I eth0 ff02::1                               # ping 所有节点（组播）
+traceroute6 2001:db8::1                             # IPv6 路由追踪
+
+# 端口测试
+telnet -6 2001:db8::1 80
+nc -6zv 2001:db8::1 80
+curl -6 http://[2001:db8::1]                        # 注意 IPv6 用方括号
+
+# DNS
+nslookup -type=AAAA example.com                     # 查 IPv6 地址
+dig AAAA example.com
+host -t AAAA example.com
+
+# 查看监听
+ss -6tlnp                                           # IPv6 监听端口
+ss -6tanp                                           # IPv6 连接
+```
+
+#### IPv4 vs IPv6 对照
+
+| 概念 | IPv4 | IPv6 |
+|------|------|------|
+| 地址长度 | 32 位 | 128 位 |
+| 地址数量 | ~43 亿 | 约 3.4×10³⁸ |
+| 地址格式 | 192.168.1.1 | 2001:db8::1 |
+| 子网掩码 | 255.255.255.0 (/24) | /64（标准子网） |
+| ARP / 邻居发现 | ARP 协议 | NDP（邻居发现协议） |
+| DHCP | DHCPv4 | SLAAC / DHCPv6 |
+| NAT | 广泛使用 | 不推荐（地址充足） |
+| 广播 | 有广播地址 | 无广播，用组播替代 |
+| 回环 | 127.0.0.1 | ::1 |
+| 私有地址 | 10.x / 172.16 / 192.168 | fc00::/7 (ULA) |
+| 链路本地 | 169.254.0.0/16 | fe80::/10 |
+| 最小 MTU | 576 字节 | 1280 字节 |
+| 分片 | 路由器可分片 | 仅发送方可分片 |
+
+#### 双栈与过渡
+
+```bash
+# 检查系统是否启用 IPv6
+sysctl net.ipv6.conf.all.disable_ipv6               # 0=启用, 1=禁用
+cat /proc/net/if_inet6                               # 有内容=已启用
+
+# 临时禁用/启用 IPv6
+sysctl -w net.ipv6.conf.all.disable_ipv6=1           # 禁用
+sysctl -w net.ipv6.conf.all.disable_ipv6=0           # 启用
+
+# 永久配置 /etc/sysctl.conf
+# net.ipv6.conf.all.disable_ipv6 = 0
+# net.ipv6.conf.default.disable_ipv6 = 0
+
+# 应用优先级（/etc/gai.conf）
+# 默认 IPv6 优先。调整 precedence 可改变优先级
+# precedence ::ffff:0:0/96  100    ← IPv4 mapped
+# precedence ::1/128         50
+# precedence ::/0            40
+# precedence 2002::/16       30
+# precedence ::/96           20
+
+# 测试优先级
+curl -v https://example.com                          # 看用 v4 还是 v6
+curl -4 https://example.com                          # 强制 IPv4
+curl -6 https://example.com                          # 强制 IPv6
+```
+
+#### IPv6 排障
+
+```bash
+# 1. IPv6 是否启用
+sysctl net.ipv6.conf.all.disable_ipv6
+ip -6 addr show | grep inet6
+
+# 2. 链路本地地址是否正常（fe80:: 必须有）
+ip -6 addr show eth0 | grep fe80
+
+# 3. 默认网关
+ip -6 route | grep default
+
+# 4. 邻居可达性
+ping6 -c 3 fe80::1%eth0                              # 测试链路本地网关
+
+# 5. DNS 解析
+dig AAAA google.com
+
+# 6. MTU 问题（IPv6 最小 1280，PMTUD 被防火墙阻断常见）
+ping6 -M do -s 1452 2001:db8::1                      # 禁止分片测试
+# 如果 ping 不通，逐步减小 -s 值直到通，+28 = MTU
+
+# 7. 防火墙
+ip6tables -L -n -v
+```
