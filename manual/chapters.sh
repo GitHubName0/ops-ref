@@ -18,6 +18,7 @@ CHAPTERS=(
   "11-security.md:安全加固"
   "12-nginx.md:Nginx/Web 服务器"
   "13-git.md:Git 版本控制"
+  "14-networking.md:网络排查与抓包"
   "06-architecture.md:项目架构"
   "07-help.md:使用帮助"
 )
