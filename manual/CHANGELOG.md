@@ -1,5 +1,20 @@
 # Changelog
 
+## v1.6.0 (2026-07-13)
+
+### 新增
+- **网络排查与抓包章节**（14-networking.md，445 行）— 排查方法论、3 个诊断场景流程、tcpdump 抓包实战、进阶工具、IPv4/IPv6 基础与双栈排障
+- **OpenStack 组件原生命令**（04-openstack.md +250 行）— nova/cinder/neutron/glance/swift 独立 CLI 全覆盖 + 统一 CLI 对应表
+
+### 修复
+- AI 问答：DNS/磁盘/内存/CPU 主题命令映射（TOPIC_MAP），不再答非所问
+- AI 问答：弱匹配分数阈值过滤 + 结构化回答模板
+- 过滤标签：修复 Linux/K8s 点击无反应
+
+### 项目
+- GitHub 仓库公开上线 `GitHubName0/ops-ref`，中英双语 README + 15 Topics 标签
+- 掘金推广文章就绪
+
 ## v1.5.2 (2026-07-13)
 
 ### 修复
